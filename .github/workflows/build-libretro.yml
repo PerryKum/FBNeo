@@ -4,15 +4,10 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
-    paths:
-      - '.github/workflows/build-libretro.yml'
-      - 'src/burner/libretro/**'
-      - 'src/burn/**'
-      - 'src/cpu/**'
 
 jobs:
   linux-aarch64:
-    name: Linux aarch64 (AURKNIX / ROCKNIX handhelds)
+    name: Linux aarch64 (.so for AURKNIX / ROCKNIX)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +18,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git perl nasm \
-            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu file binutils
 
       - name: Build aarch64 libretro core
         run: |
@@ -38,26 +33,41 @@ jobs:
           file src/burner/libretro/fbneo_libretro.so
           readelf -h src/burner/libretro/fbneo_libretro.so | grep -E 'Class|Machine'
 
-      - name: Upload aarch64 artifact
+      - name: Upload aarch64 .so
         uses: actions/upload-artifact@v4
         with:
           name: fbneo_libretro-linux-aarch64
           path: src/burner/libretro/fbneo_libretro.so
 
-  linux-x86_64:
-    name: Linux x86_64 (desktop / RetroArch PC)
-    runs-on: ubuntu-latest
+  windows-x86_64:
+    name: Windows x86_64 (.dll for RetroArch PC)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y build-essential git perl nasm
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-nasm
+            make
+            perl
 
-      - name: Build x86_64 libretro core
-        run: make -j$(nproc) -C src/burner/libretro platform=unix
+      - name: Build Windows libretro core
+        run: make -j$(nproc) -C src/burner/libretro
 
-      - name: Upload x86_64 artifact
+      - name: Verify output
+        run: ls -la src/burner/libretro/fbneo_libretro.dll
+
+      - name: Upload Windows .dll
         uses: actions/upload-artifact@v4
         with:
-          name: fbneo_libretro-linux-x86_64
-          path: src/burner/libretro/fbneo_libretro.so
+          name: fbneo_libretro-windows-x86_64
+          path: src/burner/libretro/fbneo_libretro.dll
