@@ -226,11 +226,15 @@ jobs:
           cp artifacts/fbneo_libretro-windows-x86/fbneo_libretro.dll release/fbneo_libretro-windows-x86.dll
           ls -la release/
 
+      - name: Set release timestamp
+        id: release_ts
+        run: echo "stamp=$(date -u +'%Y%m%d%H%M%S')" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0.03-perrykum-${{ github.run_number }}
-          name: FinalBurn Neo (Kum) v1.0.0.03-perrykum (#${{ github.run_number }})
+          tag_name: v1.0.0.03-perrykum-${{ steps.release_ts.outputs.stamp }}
+          name: v1.0.0.03-perrykum ${{ steps.release_ts.outputs.stamp }}
           body: |
             Automated libretro core build from commit ${{ github.sha }}.
 
