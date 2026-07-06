@@ -28,8 +28,11 @@ fbneo.dat
 # libretro
 /.github
 *.so
+*.dll
 *.o
 *.d
+src/burner/libretro/*.in
+src/burner/libretro/fbneo_libretro.dll
 src/burner/libretro/ctvmake
 src/burner/libretro/m68kmake
 src/burner/libretro/pgmspritecreate

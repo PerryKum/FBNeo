@@ -1,5 +1,15 @@
 # FinalBurn Neo
 
+## CRC fallback fork
+
+This fork adds an independent CRC-based ROM loading fallback for the libretro core:
+
+- Original name-based rules run first (unchanged when standard zip names are found).
+- When no standard-named archive is found, the core identifies games and locates parent/BIOS archives by ROM CRC, regardless of zip filenames.
+- CRC directory scan walks one level of subfolders under each ROM root.
+
+RetroArch core info shows `FinalBurn Neo (perrykum)` and a `-perrykum` git suffix in the version string (e.g. `v1.0.0.03 260705 GITcf53523-perrykum`).
+
 ## Note about this document
 
 It mostly assumes you are using RetroArch as your libretro frontend, some specific instructions might differ if you are using another frontend.

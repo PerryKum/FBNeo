@@ -1,5 +1,11 @@
+#ifndef FBNEO_CRC_FALLBACK
+#define FBNEO_CRC_FALLBACK 0
+#endif
+
 #include <vector>
 #include <string>
+#include <set>
+#include <climits>
 #include <sys/types.h>
 #include <sys/stat.h>
 
@@ -18,6 +24,7 @@
 #endif
 
 #include <file/file_path.h>
+#include <retro_dirent.h>
 
 #include <streams/file_stream.h>
 #include <string/stdstring.h>
@@ -496,7 +503,7 @@ extern unsigned int (__cdecl *BurnHighCol) (signed int r, signed int g, signed i
 
 void retro_get_system_info(struct retro_system_info *info)
 {
-	char *library_version = (char*)calloc(38, sizeof(char));
+	char *library_version = (char*)calloc(48, sizeof(char));
 
 #ifndef GIT_DATE
 #define GIT_DATE ""
@@ -508,7 +515,11 @@ void retro_get_system_info(struct retro_system_info *info)
 
 	sprintf(library_version, "v%x.%x.%x.%02x %s %s", nBurnVer >> 20, (nBurnVer >> 16) & 0x0F, (nBurnVer >> 8) & 0xFF, nBurnVer & 0xFF, GIT_DATE, GIT_VERSION);
 
+#if FBNEO_CRC_FALLBACK
+	info->library_name = "FinalBurn Neo (perrykum)";
+#else
 	info->library_name = APP_TITLE;
+#endif
 	info->library_version = strdup(library_version);
 	info->need_fullpath = true;
 	info->block_extract = true;
@@ -922,6 +933,435 @@ static int archive_load_rom(uint8_t *dest, int *wrote, int i)
 	return 0;
 }
 
+// ---------------------------------------------------------------------------
+// CRC fallback (used only when original name-based rules fail)
+// ---------------------------------------------------------------------------
+
+static bool is_rom_archive_name(const char* name)
+{
+	const char* ext = strrchr(name, '.');
+	if (!ext)
+		return false;
+	return string_is_equal_noncase(ext, ".zip")
+#ifdef INCLUDE_7Z_SUPPORT
+		|| string_is_equal_noncase(ext, ".7z")
+#endif
+		;
+}
+
+// ZipOpen() appends .zip/.7z itself; paths passed to it must not include the extension.
+static void strip_archive_extension(char* path)
+{
+	char* ext = strrchr(path, '.');
+	if (ext && (string_is_equal_noncase(ext, ".zip")
+#ifdef INCLUDE_7Z_SUPPORT
+		|| string_is_equal_noncase(ext, ".7z")
+#endif
+		))
+		*ext = '\0';
+}
+
+static bool archive_path_listed(const char* path)
+{
+	for (size_t i = 0; i < g_find_list_path.size(); i++)
+	{
+		if (string_is_equal(g_find_list_path[i].path.c_str(), path))
+			return true;
+	}
+	return false;
+}
+
+static void add_located_archive(const char* path, bool ignoreCrc)
+{
+	char open_path[MAX_PATH];
+
+	if (!path || !path[0])
+		return;
+
+	strncpy(open_path, path, sizeof(open_path) - 1);
+	open_path[sizeof(open_path) - 1] = '\0';
+	strip_archive_extension(open_path);
+
+	if (archive_path_listed(open_path))
+		return;
+
+	if (ZipOpen(open_path) != 0)
+		return;
+
+	g_find_list_path.push_back(located_archive());
+	located_archive* located = &g_find_list_path.back();
+	located->path = open_path;
+	located->ignoreCrc = ignoreCrc;
+	ZipClose();
+	HandleMessage(RETRO_LOG_INFO, "[FBNeo] CRC fallback archive: %s\n", open_path);
+}
+
+static bool archive_collect_crcs(const char* path, std::set<UINT32>& crcs)
+{
+	ZipEntry* list = NULL;
+	int count = 0;
+	char open_path[MAX_PATH];
+
+	if (!path || !path[0])
+		return false;
+
+	strncpy(open_path, path, sizeof(open_path) - 1);
+	open_path[sizeof(open_path) - 1] = '\0';
+	strip_archive_extension(open_path);
+
+	if (ZipOpen(open_path) != 0)
+		return false;
+	if (ZipGetList(&list, &count) != 0)
+	{
+		ZipClose();
+		return false;
+	}
+	ZipClose();
+
+	for (int i = 0; i < count; i++)
+	{
+		if (list[i].nCrc)
+			crcs.insert(list[i].nCrc);
+	}
+	free_archive_list(list, count);
+	return !crcs.empty();
+}
+
+static bool driver_rom_skippable(const BurnRomInfo& ri)
+{
+	return (ri.nType & BRF_NODUMP) || (ri.nType == 0) || (ri.nLen == 0) || (ri.nCrc == 0);
+}
+
+// Identify driver from archive contents. Returns driver index or ~0U.
+static unsigned int identify_driver_by_archive_crcs(const char* archive_path)
+{
+	std::set<UINT32> archive_crcs;
+	if (!archive_collect_crcs(archive_path, archive_crcs))
+		return ~0U;
+
+	UINT32 nOldActive = nBurnDrvActive;
+	unsigned best = ~0U;
+	int best_matches = 0;
+	int best_extras = INT_MAX;
+	int best_required = INT_MAX;
+	bool best_clean = false;
+
+	for (unsigned i = 0; i < nBurnDrvCount; i++)
+	{
+		nBurnDrvActive = i;
+		if (BurnDrvGetFlags() & BDF_BOARDROM)
+			continue;
+
+		int required = 0;
+		int matches = 0;
+		std::set<UINT32> driver_crcs;
+
+		for (unsigned r = 0; ; r++)
+		{
+			BurnRomInfo ri;
+			memset(&ri, 0, sizeof(ri));
+			if (BurnDrvGetRomInfo(&ri, r))
+				break;
+			if (driver_rom_skippable(ri))
+				continue;
+
+			driver_crcs.insert(ri.nCrc);
+			required++;
+			if (archive_crcs.count(ri.nCrc))
+				matches++;
+		}
+
+		if (matches == 0 || required == 0)
+			continue;
+
+		int extras = 0;
+		for (std::set<UINT32>::const_iterator it = archive_crcs.begin(); it != archive_crcs.end(); ++it)
+		{
+			if (!driver_crcs.count(*it))
+				extras++;
+		}
+
+		bool clean = (extras == 0);
+		bool take = false;
+
+		if (best == ~0U)
+			take = true;
+		else if (clean != best_clean)
+			take = clean;
+		else if (matches > best_matches)
+			take = true;
+		else if (matches == best_matches && extras < best_extras)
+			take = true;
+		else if (matches == best_matches && extras == best_extras && required < best_required)
+			take = true;
+
+		if (take)
+		{
+			best = i;
+			best_matches = matches;
+			best_extras = extras;
+			best_required = required;
+			best_clean = clean;
+		}
+	}
+
+	nBurnDrvActive = nOldActive;
+
+	if (best == ~0U || best_matches <= 0)
+		return ~0U;
+
+	// Reject weak matches: require either a clean archive or a solid hit count
+	if (!best_clean && best_matches < 2)
+		return ~0U;
+
+	return best;
+}
+
+static bool archive_contains_needed_rom(const char* path)
+{
+	std::set<UINT32> crcs;
+	if (!archive_collect_crcs(path, crcs))
+		return false;
+
+	for (unsigned i = 0; i < nRomCount; i++)
+	{
+		struct BurnRomInfo ri;
+		memset(&ri, 0, sizeof(ri));
+		BurnDrvGetRomInfo(&ri, i);
+		if (driver_rom_skippable(ri))
+			continue;
+		if (crcs.count(ri.nCrc))
+			return true;
+	}
+	return false;
+}
+
+// CRC fallback: scan the given dir, and one level of immediate subfolders.
+// depthLeft=0: only the given directory; depthLeft=1: also enter direct children.
+static const int CRC_SCAN_MAX_DEPTH = 1;
+
+static void scan_directory_archives(const char* dir, int depthLeft)
+{
+	if (!dir || !dir[0] || depthLeft < 0)
+		return;
+
+	struct RDIR* entry = retro_opendir_include_hidden(dir, true);
+	if (!entry || retro_dirent_error(entry))
+		return;
+
+	while (retro_readdir(entry))
+	{
+		const char* name = retro_dirent_get_name(entry);
+		if (!name || !strcmp(name, ".") || !strcmp(name, ".."))
+			continue;
+
+		char path[MAX_PATH];
+		snprintf_nowarn(path, sizeof(path), "%s%c%s", dir, PATH_DEFAULT_SLASH_C(), name);
+
+		if (retro_dirent_is_dir(entry, NULL))
+		{
+			if (depthLeft > 0)
+				scan_directory_archives(path, depthLeft - 1);
+			continue;
+		}
+
+		if (!is_rom_archive_name(name))
+			continue;
+		if (!archive_contains_needed_rom(path))
+			continue;
+		add_located_archive(path, false);
+	}
+
+	retro_closedir(entry);
+}
+
+static void scan_directory_archives(const char* dir)
+{
+	scan_directory_archives(dir, CRC_SCAN_MAX_DEPTH);
+}
+
+static void locate_archives_by_crc_fallback()
+{
+	// Always include the archive the user selected
+	if (szRomsetPath[0])
+		add_located_archive(szRomsetPath, false);
+
+	scan_directory_archives(g_rom_dir);
+
+	for (INT32 nType = 0; nType < TYPES_MAX; nType++)
+	{
+		char subdir[MAX_PATH];
+		snprintf_nowarn(subdir, sizeof(subdir), "%s%c%s", g_rom_dir, PATH_DEFAULT_SLASH_C(), szTypeEnum[0][nType]);
+		scan_directory_archives(subdir);
+	}
+
+	{
+		char subdir[MAX_PATH];
+		snprintf_nowarn(subdir, sizeof(subdir), "%s%cfbneo", g_system_dir, PATH_DEFAULT_SLASH_C());
+		scan_directory_archives(subdir);
+
+		for (INT32 nType = 0; nType < TYPES_MAX; nType++)
+		{
+			snprintf_nowarn(subdir, sizeof(subdir), "%s%cfbneo%c%s", g_system_dir, PATH_DEFAULT_SLASH_C(), PATH_DEFAULT_SLASH_C(), szTypeEnum[0][nType]);
+			scan_directory_archives(subdir);
+		}
+	}
+
+	scan_directory_archives(g_system_dir);
+
+	if (0 == CoreRomPathsLoad())
+	{
+		for (INT32 i = 0; i < DIRS_MAX; i++)
+		{
+			if (!CoreRomPaths[i][0])
+				continue;
+
+			char dir[MAX_PATH];
+			strncpy(dir, CoreRomPaths[i], sizeof(dir) - 1);
+			dir[sizeof(dir) - 1] = '\0';
+			char* p = find_last_slash(dir);
+			if ((NULL != p) && ('\0' == p[1]))
+				p[0] = '\0';
+
+			scan_directory_archives(dir);
+			for (INT32 nType = 0; nType < TYPES_MAX; nType++)
+			{
+				char subdir[MAX_PATH];
+				snprintf_nowarn(subdir, sizeof(subdir), "%s%c%s", dir, PATH_DEFAULT_SLASH_C(), szTypeEnum[0][nType]);
+				scan_directory_archives(subdir);
+			}
+		}
+	}
+}
+
+static bool map_roms_from_located_archives()
+{
+	bool any_opened = false;
+
+	for (unsigned z = 0; z < g_find_list_path.size(); z++)
+	{
+		if (ZipOpen((char*)g_find_list_path[z].path.c_str()) != 0)
+		{
+			HandleMessage(RETRO_LOG_ERROR, "[FBNeo] Failed to open archive %s\n", g_find_list_path[z].path.c_str());
+			continue;
+		}
+
+		ZipEntry *list = NULL;
+		int count;
+		if (ZipGetList(&list, &count) != 0)
+		{
+			ZipClose();
+			continue;
+		}
+
+		for (unsigned i = 0; i < nRomCount; i++)
+		{
+			if (pRomFind[i].nState == STAT_OK || pRomFind[i].nState == STAT_SKIP)
+				continue;
+
+			struct BurnRomInfo ri;
+			memset(&ri, 0, sizeof(ri));
+			BurnDrvGetRomInfo(&ri, i);
+
+			if ((ri.nType & BRF_NODUMP) || (ri.nType == 0) || (ri.nLen == 0) || ((NULL == pDataRomDesc) && (0 == ri.nCrc)))
+			{
+				pRomFind[i].nState = STAT_SKIP;
+				continue;
+			}
+
+			char *rom_name;
+			char *real_rom_name;
+			uint32_t real_rom_crc;
+			int index = find_rom_by_crc(ri.nCrc, list, count, &real_rom_name);
+
+			BurnDrvGetRomName(&rom_name, i, 0);
+
+			bool unknown_crc = false;
+
+			if (index < 0)
+			{
+				if ((g_find_list_path[z].ignoreCrc && bPatchedRomsetsEnabled) ||
+					((NULL != pDataRomDesc) && (-1 != pRDI->nDescCount)))
+				{
+					index = find_rom_by_name(rom_name, list, count, &real_rom_crc);
+					if (index >= 0)
+						unknown_crc = true;
+				}
+			}
+
+			if (index < 0)
+				continue;
+
+			if ((NULL == pDataRomDesc))
+			{
+				if (unknown_crc)
+					HandleMessage(RETRO_LOG_WARN, "[FBNeo] Using ROM with unknown crc 0x%08x and name %s from archive %s\n", real_rom_crc, rom_name, g_find_list_path[z].path.c_str());
+				else
+					HandleMessage(RETRO_LOG_INFO, "[FBNeo] Using ROM with known crc 0x%08x and name %s from archive %s\n", ri.nCrc, real_rom_name, g_find_list_path[z].path.c_str());
+			}
+
+			if (bIsNeogeoCartGame)
+				set_neogeo_bios_availability(list[index].szName, list[index].nCrc, (g_find_list_path[z].ignoreCrc && bPatchedRomsetsEnabled));
+
+			pRomFind[i].nZip = z;
+			pRomFind[i].nPos = index;
+			pRomFind[i].nState = STAT_OK;
+
+			if (list[index].nLen < ri.nLen)
+				pRomFind[i].nState = STAT_SMALL;
+			else if (list[index].nLen > ri.nLen)
+				pRomFind[i].nState = STAT_LARGE;
+
+			any_opened = true;
+		}
+
+		free_archive_list(list, count);
+		ZipClose();
+	}
+
+	return any_opened || g_find_list_path.size() > 0;
+}
+
+static bool check_required_roms_found()
+{
+	bool ret = true;
+	unsigned num_missing = 0;
+	char *rom_name = NULL;
+
+	text_missing_files[0] = '\0';
+
+	for (unsigned i = 0; i < nRomCount; i++)
+	{
+		if (pRomFind[i].nState != STAT_OK && pRomFind[i].nState != STAT_SKIP)
+		{
+			struct BurnRomInfo ri;
+			memset(&ri, 0, sizeof(ri));
+			BurnDrvGetRomInfo(&ri, i);
+			if (!(ri.nType & BRF_OPT))
+			{
+				num_missing++;
+				BurnDrvGetRomName(&rom_name, i, 0);
+				if (num_missing < 19)
+				{
+					static char prev[2048];
+					strcpy(prev, text_missing_files);
+					sprintf(text_missing_files, RETRO_ERROR_MESSAGES_11, prev, rom_name, ri.nCrc);
+				}
+				log_cb(RETRO_LOG_ERROR, "[FBNeo] ROM at index %d with name %s and CRC 0x%08x is required\n", i, rom_name, ri.nCrc);
+				ret = false;
+			}
+		}
+	}
+	if (num_missing >= 19)
+	{
+		static char prev[2048];
+		strcpy(prev, text_missing_files);
+		sprintf(text_missing_files, RETRO_ERROR_MESSAGES_12, prev, (num_missing - 18));
+	}
+
+	return ret;
+}
+
 static void locate_archive(std::vector<located_archive>& pathList, const char* const romName)
 {
 	static char path[MAX_PATH];
@@ -1100,10 +1540,10 @@ static bool open_archive()
 	}
 	memset(pRomFind, 0, nMemLen);
 
+	text_missing_files[0] = '\0';
 	g_find_list_path.clear();
 
-	// List all locations for archives, max number of differently named archives involved should be 3 (romset, parent, bios)
-	// with each of those having 4 potential locations (see locate_archive)
+	// === Original rule: locate archives by standard zip names ===
 	char *rom_name;
 	for (unsigned index = 0; index < 3; index++)
 	{
@@ -1115,137 +1555,39 @@ static bool open_archive()
 		locate_archive(g_find_list_path, rom_name);
 	}
 
+	// Standard zip names found → stay on original path only (never enter CRC).
 	if (g_find_list_path.size() > 0)
 	{
-		for (unsigned z = 0; z < g_find_list_path.size(); z++)
-		{
-			if (ZipOpen((char*)g_find_list_path[z].path.c_str()) != 0)
-			{
-				HandleMessage(RETRO_LOG_ERROR, "[FBNeo] Failed to open archive %s\n", g_find_list_path[z].path.c_str());
-				return false;
-			}
-
-			ZipEntry *list = NULL;
-			int count;
-			if (ZipGetList(&list, &count) == 0)
-			{
-				// Try to map the ROMs FBNeo wants to ROMs we find inside our pretty archives ...
-				for (unsigned i = 0; i < nRomCount; i++)
-				{
-					// Don't bother with roms that have already been found or are never needed
-					if (pRomFind[i].nState == STAT_OK || pRomFind[i].nState == STAT_SKIP)
-						continue;
-
-					struct BurnRomInfo ri;
-					memset(&ri, 0, sizeof(ri));
-					BurnDrvGetRomInfo(&ri, i);
-
-					// If a rom is never needed, let's flag it as skippable
-					if ((ri.nType & BRF_NODUMP) || (ri.nType == 0) || (ri.nLen == 0) || ((NULL == pDataRomDesc) && (0 == ri.nCrc)))
-					{
-						pRomFind[i].nState = STAT_SKIP;
-						continue;
-					}
-
-					char *real_rom_name;
-					uint32_t real_rom_crc;
-					int index = find_rom_by_crc(ri.nCrc, list, count, &real_rom_name);
-
-					BurnDrvGetRomName(&rom_name, i, 0);
-
-					bool unknown_crc = false;
-
-					if (index < 0)
-					{
-						if ((g_find_list_path[z].ignoreCrc && bPatchedRomsetsEnabled) ||
-							((NULL != pDataRomDesc) && (-1 != pRDI->nDescCount)))					// In romdata mode
-						{
-							index = find_rom_by_name(rom_name, list, count, &real_rom_crc);
-							if (index >= 0)
-								unknown_crc = true;
-						}
-					}
-
-					if (index >= 0)
-					{
-						if ((NULL == pDataRomDesc))						// Not in romdata mode
-						{
-							if (unknown_crc)
-								HandleMessage(RETRO_LOG_WARN, "[FBNeo] Using ROM with unknown crc 0x%08x and name %s from archive %s\n", real_rom_crc, rom_name, g_find_list_path[z].path.c_str());
-							else
-								HandleMessage(RETRO_LOG_INFO, "[FBNeo] Using ROM with known crc 0x%08x and name %s from archive %s\n", ri.nCrc, real_rom_name, g_find_list_path[z].path.c_str());
-						}
-					}
-					else
-					{
-						continue;
-					}
-
-					if (bIsNeogeoCartGame)
-						set_neogeo_bios_availability(list[index].szName, list[index].nCrc, (g_find_list_path[z].ignoreCrc && bPatchedRomsetsEnabled));
-
-					// Yay, we found it!
-					pRomFind[i].nZip = z;
-					pRomFind[i].nPos = index;
-					pRomFind[i].nState = STAT_OK;
-
-					if (list[index].nLen < ri.nLen)
-						pRomFind[i].nState = STAT_SMALL;
-					else if (list[index].nLen > ri.nLen)
-						pRomFind[i].nState = STAT_LARGE;
-				}
-
-				free_archive_list(list, count);
-				ZipClose();
-			}
-		}
+		map_roms_from_located_archives();
 
 		if (bIsNeogeoCartGame)
 			set_neo_system_bios();
 
-		// Going over every rom to see if they are properly loaded before we continue ...
-		bool ret = true;
-		unsigned num_missing = 0;
-		for (unsigned i = 0; i < nRomCount; i++)
-		{
-			// Neither the available roms nor the unneeded ones should trigger an error here
-			if (pRomFind[i].nState != STAT_OK && pRomFind[i].nState != STAT_SKIP)
-			{
-				struct BurnRomInfo ri;
-				memset(&ri, 0, sizeof(ri));
-				BurnDrvGetRomInfo(&ri, i);
-				if(!(ri.nType & BRF_OPT))
-				{
-					num_missing++;
-					BurnDrvGetRomName(&rom_name, i, 0);
-					if (num_missing < 19)
-					{
-						static char prev[2048];
-						strcpy(prev, text_missing_files);
-						sprintf(text_missing_files, RETRO_ERROR_MESSAGES_11, prev, rom_name, ri.nCrc);
-					}
-					log_cb(RETRO_LOG_ERROR, "[FBNeo] ROM at index %d with name %s and CRC 0x%08x is required\n", i, rom_name, ri.nCrc);
-					ret = false;
-				}
-			}
-		}
-		if (num_missing >= 19)
-		{
-			static char prev[2048];
-			strcpy(prev, text_missing_files);
-			sprintf(text_missing_files, RETRO_ERROR_MESSAGES_12, prev, (num_missing - 18));
-		}
-
 		BurnExtLoadRom = archive_load_rom;
-		return ret;
+		return check_required_roms_found();
 	}
-	else
+
+	// === CRC fallback: only when no standard-named archive was found ===
+	HandleMessage(RETRO_LOG_INFO, "[FBNeo] No standard-named archive found, trying CRC fallback\n");
+	memset(pRomFind, 0, nMemLen);
+	text_missing_files[0] = '\0';
+
+	locate_archives_by_crc_fallback();
+
+	if (g_find_list_path.size() == 0)
 	{
 		sprintf(text_missing_files, "%s", RETRO_ERROR_MESSAGES_00);
 		log_cb(RETRO_LOG_ERROR, "[FBNeo] None of those archives was found in your paths\n");
+		return false;
 	}
 
-	return false;
+	map_roms_from_located_archives();
+
+	if (bIsNeogeoCartGame)
+		set_neo_system_bios();
+
+	BurnExtLoadRom = archive_load_rom;
+	return check_required_roms_found();
 }
 
 static void SetRotation()
@@ -2464,6 +2806,25 @@ bool retro_load_game(const struct retro_game_info *info)
 		extract_basename(g_driver_name, szRomsetPath, sizeof(g_driver_name), prefix);
 	}
 
+	// Original rule first: identify by archive basename.
+	// Fallback: identify by archive CRC contents when the name is unknown.
+	if (nMode == 0 && nGameType != RETRO_GAME_TYPE_NEOCD
+		&& ~0U == BurnDrvGetIndexByName(g_driver_name))
+	{
+		unsigned int identified = identify_driver_by_archive_crcs(szRomsetPath);
+		if (identified != ~0U)
+		{
+			nBurnDrvActive = identified;
+			const char* drv_name = BurnDrvGetTextA(DRV_NAME);
+			if (drv_name)
+			{
+				strncpy(g_driver_name, drv_name, sizeof(g_driver_name) - 1);
+				g_driver_name[sizeof(g_driver_name) - 1] = '\0';
+			}
+			HandleMessage(RETRO_LOG_INFO, "[FBNeo] CRC fallback identified driver %s from %s\n", g_driver_name, szRomsetPath);
+		}
+	}
+
 	return retro_load_game_common();
 }
 
@@ -2535,6 +2896,23 @@ bool retro_load_game_special(unsigned game_type, const struct retro_game_info *i
 
 	if(nGameType == RETRO_GAME_TYPE_NEOCD)
 		extract_basename(g_driver_name, "neocdz", sizeof(g_driver_name), "");
+	else if (~0U == BurnDrvGetIndexByName(g_driver_name))
+	{
+		// Fallback: identify by archive CRC contents when the name is unknown
+		strcpy(szRomsetPath, info->path);
+		unsigned int identified = identify_driver_by_archive_crcs(info->path);
+		if (identified != ~0U)
+		{
+			nBurnDrvActive = identified;
+			const char* drv_name = BurnDrvGetTextA(DRV_NAME);
+			if (drv_name)
+			{
+				strncpy(g_driver_name, drv_name, sizeof(g_driver_name) - 1);
+				g_driver_name[sizeof(g_driver_name) - 1] = '\0';
+			}
+			HandleMessage(RETRO_LOG_INFO, "[FBNeo] CRC fallback identified driver %s from %s\n", g_driver_name, info->path);
+		}
+	}
 
 	return retro_load_game_common();
 }

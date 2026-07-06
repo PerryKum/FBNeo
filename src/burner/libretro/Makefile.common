@@ -356,5 +356,10 @@ SOURCES_C += $(FBNEO_LIB_DIR)/libchdr/libchdr_flac.c
 GIT_VERSION := $(shell git rev-parse --short HEAD || echo unknown)
 ifneq ($(GIT_VERSION),unknown)
 	GIT_DATE := $(shell git log -1 --format="%at" | xargs -I{} date -d @{} +%y%m%d)
-	CXXFLAGS += -DGIT_DATE=\"$(GIT_DATE)\" -DGIT_VERSION=\"GIT$(GIT_VERSION)\"
+	CXXFLAGS += -DGIT_DATE=\"$(GIT_DATE)\" -DGIT_VERSION=\"GIT$(GIT_VERSION)-perrykum\"
+	CFLAGS += -DGIT_DATE=\"$(GIT_DATE)\" -DGIT_VERSION=\"GIT$(GIT_VERSION)-perrykum\"
 endif
+
+# Fork tag shown in RetroArch core info
+CXXFLAGS += -DFBNEO_CRC_FALLBACK=1 -DFBNEO_FORK_TAG=\"perrykum\"
+CFLAGS += -DFBNEO_CRC_FALLBACK=1 -DFBNEO_FORK_TAG=\"perrykum\"
