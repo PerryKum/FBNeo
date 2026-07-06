@@ -1555,6 +1555,13 @@ static bool open_archive()
 		locate_archive(g_find_list_path, rom_name);
 	}
 
+#if FBNEO_CRC_FALLBACK
+	// Name-based lookup first, then always supplement with CRC scan.
+	// Needed when the game zip has a non-standard name (e.g. Chinese) but BIOS/parent
+	// zips use standard names in the same folder — otherwise only BIOS gets loaded.
+	HandleMessage(RETRO_LOG_INFO, "[FBNeo] CRC fallback: supplementing archive search\n");
+	locate_archives_by_crc_fallback();
+#else
 	// Standard zip names found → stay on original path only (never enter CRC).
 	if (g_find_list_path.size() > 0)
 	{
@@ -1573,6 +1580,7 @@ static bool open_archive()
 	text_missing_files[0] = '\0';
 
 	locate_archives_by_crc_fallback();
+#endif
 
 	if (g_find_list_path.size() == 0)
 	{
