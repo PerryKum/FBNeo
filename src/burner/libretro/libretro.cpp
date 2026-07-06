@@ -516,7 +516,7 @@ void retro_get_system_info(struct retro_system_info *info)
 	sprintf(library_version, "v%x.%x.%x.%02x %s %s", nBurnVer >> 20, (nBurnVer >> 16) & 0x0F, (nBurnVer >> 8) & 0xFF, nBurnVer & 0xFF, GIT_DATE, GIT_VERSION);
 
 #if FBNEO_CRC_FALLBACK
-	info->library_name = "FinalBurn Neo (perrykum)";
+	info->library_name = "FinalBurn Neo (Kum)";
 #else
 	info->library_name = APP_TITLE;
 #endif
