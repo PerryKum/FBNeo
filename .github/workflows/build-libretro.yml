@@ -5,6 +5,9 @@ on:
   push:
     branches: [master]
 
+permissions:
+  contents: write
+
 jobs:
   linux-x86_64:
     name: Linux x86_64 (.so)
@@ -158,3 +161,54 @@ jobs:
         with:
           name: fbneo_libretro-windows-x86
           path: src/burner/libretro/fbneo_libretro.dll
+
+  release:
+    name: Publish release
+    needs:
+      - linux-x86_64
+      - linux-aarch64
+      - linux-armv7
+      - windows-x86_64
+      - windows-x86
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          cp artifacts/fbneo_libretro-linux-x86_64/fbneo_libretro.so release/fbneo_libretro-linux-x86_64.so
+          cp artifacts/fbneo_libretro-linux-aarch64/fbneo_libretro.so release/fbneo_libretro-linux-aarch64.so
+          cp artifacts/fbneo_libretro-linux-armv7/fbneo_libretro.so release/fbneo_libretro-linux-armv7.so
+          cp artifacts/fbneo_libretro-windows-x86_64/fbneo_libretro.dll release/fbneo_libretro-windows-x86_64.dll
+          cp artifacts/fbneo_libretro-windows-x86/fbneo_libretro.dll release/fbneo_libretro-windows-x86.dll
+          cp src/burner/libretro/fbneoplus_libretro.info release/fbneoplus_libretro.info
+          cp release/fbneo_libretro-linux-aarch64.so release/fbneoplus_libretro.so
+          ls -la release/
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0.03-perrykum-${{ github.run_number }}
+          name: FinalBurn Neo (Kum) v1.0.0.03-perrykum (#${{ github.run_number }})
+          body: |
+            Automated libretro core build from commit ${{ github.sha }}.
+
+            | File | Platform |
+            |------|----------|
+            | `fbneo_libretro-linux-x86_64.so` | Linux x86_64 |
+            | `fbneo_libretro-linux-aarch64.so` | Linux aarch64 |
+            | `fbneo_libretro-linux-armv7.so` | Linux armv7 |
+            | `fbneo_libretro-windows-x86_64.dll` | Windows x86_64 |
+            | `fbneo_libretro-windows-x86.dll` | Windows x86 |
+            | `fbneoplus_libretro.so` | aarch64 build renamed for AURKNIX/ROCKNIX |
+            | `fbneoplus_libretro.info` | libretro core info |
+
+            AURKNIX/ROCKNIX: copy `fbneoplus_libretro.so` and `fbneoplus_libretro.info` to `/storage/cores/`.
+          files: release/*
+          generate_release_notes: false
