@@ -3,19 +3,60 @@ name: Build libretro cores
 on:
   workflow_dispatch:
   push:
+    branches: [master]
     paths:
       - '.github/workflows/build-libretro.yml'
+      - 'src/burner/libretro/**'
+      - 'src/burn/**'
+      - 'src/cpu/**'
 
 jobs:
-  linux:
+  linux-aarch64:
+    name: Linux aarch64 (AURKNIX / ROCKNIX handhelds)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - name: Install deps
-        run: sudo apt-get update && sudo apt-get install -y build-essential
-      - name: Build
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git perl nasm \
+            gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Build aarch64 libretro core
+        run: |
+          make -j$(nproc) -C src/burner/libretro platform=unix \
+            CC=aarch64-linux-gnu-gcc \
+            CXX=aarch64-linux-gnu-g++ \
+            HAVE_NEON=0 \
+            USE_CYCLONE=0
+
+      - name: Verify architecture
+        run: |
+          file src/burner/libretro/fbneo_libretro.so
+          readelf -h src/burner/libretro/fbneo_libretro.so | grep -E 'Class|Machine'
+
+      - name: Upload aarch64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fbneo_libretro-linux-aarch64
+          path: src/burner/libretro/fbneo_libretro.so
+
+  linux-x86_64:
+    name: Linux x86_64 (desktop / RetroArch PC)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install deps
+        run: sudo apt-get update && sudo apt-get install -y build-essential git perl nasm
+
+      - name: Build x86_64 libretro core
         run: make -j$(nproc) -C src/burner/libretro platform=unix
-      - name: Upload
+
+      - name: Upload x86_64 artifact
         uses: actions/upload-artifact@v4
         with:
           name: fbneo_libretro-linux-x86_64
