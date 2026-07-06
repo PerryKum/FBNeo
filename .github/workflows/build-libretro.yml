@@ -224,8 +224,6 @@ jobs:
           cp artifacts/fbneo_libretro-linux-armv7/fbneo_libretro.so release/fbneo_libretro-linux-armv7.so
           cp artifacts/fbneo_libretro-windows-x86_64/fbneo_libretro.dll release/fbneo_libretro-windows-x86_64.dll
           cp artifacts/fbneo_libretro-windows-x86/fbneo_libretro.dll release/fbneo_libretro-windows-x86.dll
-          cp src/burner/libretro/fbneoplus_libretro.info release/fbneoplus_libretro.info
-          cp release/fbneo_libretro-linux-aarch64.so release/fbneoplus_libretro.so
           ls -la release/
 
       - name: Create GitHub release
@@ -243,9 +241,5 @@ jobs:
             | `fbneo_libretro-linux-armv7.so` | Linux armv7 |
             | `fbneo_libretro-windows-x86_64.dll` | Windows x86_64 |
             | `fbneo_libretro-windows-x86.dll` | Windows x86 |
-            | `fbneoplus_libretro.so` | aarch64 build renamed for AURKNIX/ROCKNIX |
-            | `fbneoplus_libretro.info` | libretro core info |
-
-            AURKNIX/ROCKNIX: copy `fbneoplus_libretro.so` and `fbneoplus_libretro.info` to `/storage/cores/`.
           files: release/*
           generate_release_notes: false
