@@ -1,4 +1,13 @@
 # FinalBurn Neo
+
+> **This is a libretro fork by [PerryKum](https://github.com/PerryKum)** — upstream: [libretro/FBNeo](https://github.com/libretro/FBNeo).
+>
+> **CRC fallback (perrykum):** name-based ROM lookup runs first (unchanged). If no standard-named archive is found, the libretro core identifies games and locates parent/BIOS packs by ROM CRC, regardless of zip filenames. Directory scan goes one level into subfolders.
+>
+> Build the libretro core and use `fbneo_libretro.dll` in RetroArch. Core info shows `FinalBurn Neo (perrykum)` with a `-perrykum` git suffix in the version string.
+>
+> Details: [src/burner/libretro/README.md](src/burner/libretro/README.md)
+
 Official Forum: https://neo-source.com
 
 Discord: https://discord.gg/8EGVd9v
