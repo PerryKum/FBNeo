@@ -914,6 +914,8 @@ static int archive_load_rom(uint8_t *dest, int *wrote, int i)
 	int archive = pRomFind[i].nZip;
 
 	// We want to return an error code even if the rom is not needed, that's what standalone does
+	if (pRomFind[i].nState == STAT_SKIP)
+		return 0;
 	if (pRomFind[i].nState != STAT_OK)
 		return 1;
 
@@ -1322,6 +1324,34 @@ static bool map_roms_from_located_archives()
 	return any_opened || g_find_list_path.size() > 0;
 }
 
+// PGM (and similar) board ROM lists several 68K BIOS images without BRF_OPT.
+// Only one is used at runtime; mark the rest as skipped once any is found.
+static void skip_alternate_board_bios()
+{
+	bool prog_bios_found = false;
+
+	for (unsigned i = 0; i < nRomCount; i++)
+	{
+		struct BurnRomInfo ri;
+		memset(&ri, 0, sizeof(ri));
+		BurnDrvGetRomInfo(&ri, i);
+		if ((ri.nType & BRF_BIOS) && (ri.nType & BRF_PRG) && !(ri.nType & BRF_OPT) && pRomFind[i].nState == STAT_OK)
+			prog_bios_found = true;
+	}
+
+	if (!prog_bios_found)
+		return;
+
+	for (unsigned i = 0; i < nRomCount; i++)
+	{
+		struct BurnRomInfo ri;
+		memset(&ri, 0, sizeof(ri));
+		BurnDrvGetRomInfo(&ri, i);
+		if ((ri.nType & BRF_BIOS) && (ri.nType & BRF_PRG) && !(ri.nType & BRF_OPT) && pRomFind[i].nState != STAT_OK)
+			pRomFind[i].nState = STAT_SKIP;
+	}
+}
+
 static bool check_required_roms_found()
 {
 	bool ret = true;
@@ -1566,6 +1596,7 @@ static bool open_archive()
 	if (g_find_list_path.size() > 0)
 	{
 		map_roms_from_located_archives();
+		skip_alternate_board_bios();
 
 		if (bIsNeogeoCartGame)
 			set_neo_system_bios();
@@ -1590,6 +1621,7 @@ static bool open_archive()
 	}
 
 	map_roms_from_located_archives();
+	skip_alternate_board_bios();
 
 	if (bIsNeogeoCartGame)
 		set_neo_system_bios();
